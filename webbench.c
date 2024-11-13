@@ -28,6 +28,11 @@
 volatile int timerexpired=0;
 int speed=0;
 int failed=0;
+int resp20x=0;
+int resp40x=0;
+int resp50x=0;
+int resp30x=0;
+int respxxx=0;
 int bytes=0;
 /* globals */
 int http10=1; /* 0 - http/0.9, 1 - http/1.0, 2 - http/1.1 */
@@ -36,14 +41,16 @@ int http10=1; /* 0 - http/0.9, 1 - http/1.0, 2 - http/1.1 */
 #define METHOD_HEAD 1
 #define METHOD_OPTIONS 2
 #define METHOD_TRACE 3
-#define PROGRAM_VERSION "1.5"
+#define PROGRAM_VERSION "1.5.1"
 int method=METHOD_GET;
 int clients=1;
 int force=0;
+int debug=0;
 int force_reload=0;
 int proxyport=80;
 char *proxyhost=NULL;
 int benchtime=30;
+int timeout=30;
 /* internal */
 int mypipe[2];
 char host[MAXHOSTNAMELEN];
@@ -53,8 +60,10 @@ char request[REQUEST_SIZE];
 static const struct option long_options[]=
 {
  {"force",no_argument,&force,1},
+ {"debug",no_argument,&debug,1},
  {"reload",no_argument,&force_reload,1},
  {"time",required_argument,NULL,'t'},
+ {"timeout",required_argument,NULL,'o'},
  {"help",no_argument,NULL,'?'},
  {"http09",no_argument,NULL,'9'},
  {"http10",no_argument,NULL,'1'},
@@ -84,8 +93,10 @@ static void usage(void)
    fprintf(stderr,
 	"webbench [option]... URL\n"
 	"  -f|--force               Don't wait for reply from server.\n"
+	"  -d|--debug               Some debug output.\n"
 	"  -r|--reload              Send reload request - Pragma: no-cache.\n"
 	"  -t|--time <sec>          Run benchmark for <sec> seconds. Default 30.\n"
+	"  -o|--timeout <sec>          Socket timeout <sec> seconds. Default 30.\n"
 	"  -p|--proxy <server:port> Use proxy server for request.\n"
 	"  -c|--clients <n>         Run <n> HTTP clients at once. Default one.\n"
 	"  -9|--http09              Use HTTP/0.9 style requests.\n"
@@ -111,18 +122,20 @@ int main(int argc, char *argv[])
           return 2;
  } 
 
- while((opt=getopt_long(argc,argv,"912Vfrt:p:c:?h",long_options,&options_index))!=EOF )
+ while((opt=getopt_long(argc,argv,"912Vfdrt:p:c:o:?h",long_options,&options_index))!=EOF )
  {
   switch(opt)
   {
    case  0 : break;
    case 'f': force=1;break;
+   case 'd': debug=1;break;
    case 'r': force_reload=1;break; 
    case '9': http10=0;break;
    case '1': http10=1;break;
    case '2': http10=2;break;
    case 'V': printf(PROGRAM_VERSION"\n");exit(0);
    case 't': benchtime=atoi(optarg);break;	     
+   case 'o': timeout=atoi(optarg);break;	     
    case 'p': 
 	     /* proxy server parsing server:port */
 	     tmp=strrchr(optarg,':');
@@ -159,7 +172,7 @@ int main(int argc, char *argv[])
  if(clients==0) clients=1;
  if(benchtime==0) benchtime=60;
  /* Copyright */
- fprintf(stderr,"Webbench - Simple Web Benchmark "PROGRAM_VERSION"\n"
+ fprintf(stderr,"Webbench - Simple Web Benchmark "PROGRAM_VERSION" mod by minuteman\n"
 	 "Copyright (c) Radim Kolar 1997-2004, GPL Open Source Software.\n"
 	 );
  build_request(argv[optind]);
@@ -188,8 +201,9 @@ int main(int argc, char *argv[])
  else
    printf("%d clients",clients);
 
- printf(", running %d sec", benchtime);
+ printf(", running %d sec, socket timeout %d sec", benchtime,timeout);
  if(force) printf(", early socket close");
+ if(debug) printf(", some debug error output");
  if(proxyhost!=NULL) printf(", via proxy server %s:%d",proxyhost,proxyport);
  if(force_reload) printf(", forcing reload");
  printf(".\n");
@@ -293,16 +307,18 @@ void build_request(const char *url)
 /* vraci system rc error kod */
 static int bench(void)
 {
-  int i,j,k;	
+  int i,j,k,l,m,n,o,p;	
   pid_t pid=0;
   FILE *f;
 
   /* check avaibility of target server */
-  i=Socket(proxyhost==NULL?host:proxyhost,proxyport);
+  fprintf(stderr,"\nTesting connect to server ...\n");
+  i=Socket(proxyhost==NULL?host:proxyhost,proxyport,timeout);
   if(i<0) { 
 	   fprintf(stderr,"\nConnect to server failed. Aborting benchmark.\n");
            return 1;
          }
+  fprintf(stderr,"Success.\n");  
   close(i);
   /* create pipe */
   if(pipe(mypipe))
@@ -320,9 +336,11 @@ static int bench(void)
   */
 
   /* fork childs */
+  fprintf(stderr,"Forking clients and runing webbench ... ");
   for(i=0;i<clients;i++)
   {
 	   pid=fork();
+	   
 	   if(pid <= (pid_t) 0)
 	   {
 		   /* child process or error*/
@@ -330,10 +348,11 @@ static int bench(void)
 		   break;
 	   }
   }
-
+ 
+  
   if( pid< (pid_t) 0)
   {
-          fprintf(stderr,"problems forking worker no. %d\n",i);
+          fprintf(stderr,"\nproblems forking worker no. %d\n",i);
 	  perror("fork failed.");
 	  return 3;
   }
@@ -341,6 +360,7 @@ static int bench(void)
   if(pid== (pid_t) 0)
   {
     /* I am a child */
+    
     if(proxyhost==NULL)
       benchcore(host,proxyport,request);
          else
@@ -354,11 +374,12 @@ static int bench(void)
 		 return 3;
 	 }
 	 /* fprintf(stderr,"Child - %d %d\n",speed,failed); */
-	 fprintf(f,"%d %d %d\n",speed,failed,bytes);
+	 fprintf(f,"%d %d %d %d %d %d %d %d\n",speed,failed,bytes,resp20x,resp30x,resp40x,resp50x,respxxx);
 	 fclose(f);
 	 return 0;
   } else
   {
+	  
 	  f=fdopen(mypipe[0],"r");
 	  if(f==NULL) 
 	  {
@@ -367,12 +388,17 @@ static int bench(void)
 	  }
 	  setvbuf(f,NULL,_IONBF,0);
 	  speed=0;
-          failed=0;
-          bytes=0;
-
+      failed=0;
+      bytes=0;
+      resp50x=0;
+      respxxx=0;
+      resp20x=0;
+      resp30x=0;
+      resp40x=0;
+      
 	  while(1)
 	  {
-		  pid=fscanf(f,"%d %d %d",&i,&j,&k);
+		  pid=fscanf(f,"%d %d %d %d %d %d %d %d",&i,&j,&k,&l,&m,&n,&o,&p);
 		  if(pid<2)
                   {
                        fprintf(stderr,"Some of our childrens died.\n");
@@ -381,6 +407,11 @@ static int bench(void)
 		  speed+=i;
 		  failed+=j;
 		  bytes+=k;
+		  resp20x+=l;
+		  resp30x+=m;
+		  resp40x+=n;
+		  resp50x+=o;
+		  respxxx+=p;
 		  /* fprintf(stderr,"*Knock* %d %d read=%d\n",speed,failed,pid); */
 		  if(--clients==0) break;
 	  }
@@ -391,6 +422,7 @@ static int bench(void)
 		  (int)(bytes/(float)benchtime),
 		  speed,
 		  failed);
+  printf("Response Code:\n200=%d , 3XX=%d , 4XX=%d , 5XX=%d , Other=%d.\n", resp20x,resp30x,resp40x,resp50x,respxxx);
   }
   return i;
 }
@@ -398,8 +430,10 @@ static int bench(void)
 void benchcore(const char *host,const int port,const char *req)
 {
  int rlen;
- char buf[1500];
- int s,i;
+ char buf[1500],buf1[100],*ptr;
+ int s,i,j;
+ int buflen,cdone;
+ int checking;
  struct sigaction sa;
 
  /* setup alarm signal handler */
@@ -416,14 +450,19 @@ void benchcore(const char *host,const int port,const char *req)
     {
        if(failed>0)
        {
-          /* fprintf(stderr,"Correcting failed by signal\n"); */
+          
           failed--;
+          //if(debug) fprintf(stderr,"Correcting failed by signal\n");
        }
        return;
     }
-    s=Socket(host,port);                          
+    s=Socket(host,port,timeout);                          
+	    checking=1;
+	    ptr=buf1;
+	    cdone=0;
+	    buflen=0;
     if(s<0) { failed++;continue;} 
-    if(rlen!=write(s,req,rlen)) {failed++;close(s);continue;}
+    if(rlen!=write(s,req,rlen)) {if(debug) fprintf(stderr,"Request send failed.\n");failed++;close(s);continue;}
     if(http10==0) 
 	    if(shutdown(s,1)) { failed++;close(s);continue;}
     if(force==0) 
@@ -431,22 +470,100 @@ void benchcore(const char *host,const int port,const char *req)
             /* read all available data from socket */
 	    while(1)
 	    {
-              if(timerexpired) break; 
-	      i=read(s,buf,1500);
+          if(timerexpired) break; 
+	      i=read(s,buf,1499);
               /* fprintf(stderr,"%d\n",i); */
+       
 	      if(i<0) 
-              { 
+          { 
                  failed++;
                  close(s);
                  goto nexttry;
-              }
-	       else
-		       if(i==0) break;
-		       else
-			       bytes+=i;
-	    }
+          }
+	      else
+	      {
+		     if(i==0)
+		     {
+		         if(cdone==0)
+		         {
+		            if(debug)
+		                fprintf(stderr,"Other(NO respCode): %s , buflen: %d\n",buf1,buflen);
+		            respxxx++;
+		            speed++;
+		            if(buflen==0 && debug)
+		                fprintf(stderr,"Empty Response\n");
+		         }
+		         
+		         break;
+		     }
+		     else
+		     {
+               bytes+=i;
+               buf[i]=0;
+		       if(checking)
+               {
+                 //strncpy(ptr, buf,(1499-buflen));
+                 if(cdone==0 && buflen<20)
+                 {
+                     for(j=0;j<i;j++)
+                     {
+                         buf1[buflen]=buf[j];
+                         if(buf[j]=='\n' || buf[j]=='\r')
+                         {
+                             cdone=1;
+                             buf1[buflen]=0;
+                         }
+                         buflen++;
+                     }
+                     //strncpy(ptr, buf, 20);
+                     //ptr+=(i>=20?20:i);
+                     //ptr[0]=0;
+                     //buflen+=i;
+                     
+                 }
+                 if(cdone)
+                 {
+                     if (strstr(buf1, "HTTP/") != NULL)
+                     {
+                         ptr=buf1+9;
+                         
+                         if (ptr[0]=='2' && ptr[1]=='0' && ptr[2]=='0' && ptr[3]==' '  && ptr[4]=='O' ) {
+                             speed++;
+                             resp20x++;
+                         } else if (ptr[0]=='3') {
+                             //if(debug) fprintf(stderr,"3XX: %s\n",ptr);
+                             resp30x++;
+                             speed++;
+		                 } else if (ptr[0]=='4') {
+		                     //if(debug) fprintf(stderr,"4XX: %s\n",ptr);
+                             resp40x++;
+                             speed++;
+	                     } else if (ptr[0]=='5') {
+	                         //if(debug) fprintf(stderr,"5XX: %s\n",ptr);
+			                 resp50x++;
+			                 speed++;
+		                 } else {
+		                     if(debug) fprintf(stderr,"Other(Code): %s\n",buf1);
+		                     respxxx++;
+		                     speed++;
+		                 }
+		             } else {
+		                     if(debug) fprintf(stderr,"Other(NO HTTP): %s\n",buf1);
+		                     respxxx++;
+		                     speed++;
+		             }
+                     checking=0;
+		         }  		       
+               }
+	         }
+          }
+        }
+        close(s);
     }
-    if(close(s)) {failed++;continue;}
-    speed++;
+    else
+    {
+       speed++; 
+       if(close(s)) {if(debug) fprintf(stderr,"Close failed\n");failed++;continue;}
+    }
  }
 }
